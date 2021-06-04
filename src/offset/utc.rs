@@ -45,8 +45,11 @@ impl Utc {
     /// Returns a `DateTime` which corresponds to the current date.
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind")))]
     pub fn now() -> DateTime<Utc> {
-        let spec = oldtime::get_time();
-        let naive = NaiveDateTime::from_timestamp(spec.sec, spec.nsec as u32);
+        let datetime = oldtime::OffsetDateTime::now_utc();
+        let naive = NaiveDateTime::from_timestamp(
+            datetime.unix_timestamp(),
+            (datetime.unix_timestamp_nanos() % 1_000_000_000) as u32,
+        );
         DateTime::from_utc(naive, Utc)
     }
 

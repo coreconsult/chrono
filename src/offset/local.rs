@@ -4,67 +4,42 @@
 //! The local (system) time zone.
 
 use oldtime;
+// TODO(timvisee): use this?
+use oldtime::Duration as Timespec;
 
 use super::fixed::FixedOffset;
 use super::{LocalResult, TimeZone};
 use naive::{NaiveDate, NaiveDateTime, NaiveTime};
+use Timelike;
 use {Date, DateTime};
-use {Datelike, Timelike};
 
-/// Converts a `time::Tm` struct into the timezone-aware `DateTime`.
+/// Converts a `time::OffsetDateTime` struct into the timezone-aware `DateTime`.
 /// This assumes that `time` is working correctly, i.e. any error is fatal.
-fn tm_to_datetime(mut tm: oldtime::Tm) -> DateTime<Local> {
-    if tm.tm_sec >= 60 {
-        tm.tm_nsec += (tm.tm_sec - 59) * 1_000_000_000;
-        tm.tm_sec = 59;
-    }
-
-    #[cfg(not(windows))]
-    fn tm_to_naive_date(tm: &oldtime::Tm) -> NaiveDate {
-        // from_yo is more efficient than from_ymd (since it's the internal representation).
-        NaiveDate::from_yo(tm.tm_year + 1900, tm.tm_yday as u32 + 1)
-    }
-
-    #[cfg(windows)]
-    fn tm_to_naive_date(tm: &oldtime::Tm) -> NaiveDate {
-        // ...but tm_yday is broken in Windows (issue #85)
-        NaiveDate::from_ymd(tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32)
-    }
-
-    let date = tm_to_naive_date(&tm);
+// TODO(timvisee): correct offset logic?
+fn offsetdatetime_to_datetime(odt: oldtime::OffsetDateTime) -> DateTime<Local> {
+    let date = NaiveDate::from_ymd(odt.year(), odt.month() as u32, odt.day() as u32);
     let time = NaiveTime::from_hms_nano(
-        tm.tm_hour as u32,
-        tm.tm_min as u32,
-        tm.tm_sec as u32,
-        tm.tm_nsec as u32,
+        odt.hour() as u32,
+        odt.minute() as u32,
+        odt.second() as u32,
+        odt.nanosecond(),
     );
-    let offset = FixedOffset::east(tm.tm_utcoff);
+    let offset = FixedOffset::east(odt.offset().as_seconds());
     DateTime::from_utc(date.and_time(time) - offset, offset)
 }
 
 /// Converts a local `NaiveDateTime` to the `time::Timespec`.
-fn datetime_to_timespec(d: &NaiveDateTime, local: bool) -> oldtime::Timespec {
-    // well, this exploits an undocumented `Tm::to_timespec` behavior
-    // to get the exact function we want (either `timegm` or `mktime`).
-    // the number 1 is arbitrary but should be non-zero to trigger `mktime`.
-    let tm_utcoff = if local { 1 } else { 0 };
-
-    let tm = oldtime::Tm {
-        tm_sec: d.second() as i32,
-        tm_min: d.minute() as i32,
-        tm_hour: d.hour() as i32,
-        tm_mday: d.day() as i32,
-        tm_mon: d.month0() as i32, // yes, C is that strange...
-        tm_year: d.year() - 1900,  // this doesn't underflow, we know that d is `NaiveDateTime`.
-        tm_wday: 0,                // to_local ignores this
-        tm_yday: 0,                // and this
-        tm_isdst: -1,
-        tm_utcoff: tm_utcoff,
-        // do not set this, OS APIs are heavily inconsistent in terms of leap second handling
-        tm_nsec: 0,
+fn datetime_to_timespec(d: &NaiveDateTime, local: bool) -> Timespec {
+    let offset = if local {
+        oldtime::UtcOffset::try_current_local_offset()
+            .unwrap_or(oldtime::UtcOffset::UTC)
+            .as_seconds() as i64
+    } else {
+        0
     };
 
-    tm.to_timespec()
+    // do not set nanoseconds, OS APIs are heavily inconsistent in terms of leap second handling
+    Timespec::new(d.timestamp() + offset, 0)
 }
 
 /// The local timescale. This is implemented via the standard `time` crate.
@@ -93,7 +68,7 @@ impl Local {
     /// Returns a `DateTime` which corresponds to the current date.
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind")))]
     pub fn now() -> DateTime<Local> {
-        tm_to_datetime(oldtime::now())
+        offsetdatetime_to_datetime(oldtime::OffsetDateTime::now_utc())
     }
 
     /// Returns a `DateTime` which corresponds to the current date.
@@ -143,13 +118,15 @@ impl TimeZone for Local {
 
     fn from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<DateTime<Local>> {
         let timespec = datetime_to_timespec(local, true);
+        let offset =
+            oldtime::UtcOffset::try_current_local_offset().unwrap_or(oldtime::UtcOffset::UTC);
 
         // datetime_to_timespec completely ignores leap seconds, so we need to adjust for them
-        let mut tm = oldtime::at(timespec);
-        assert_eq!(tm.tm_nsec, 0);
-        tm.tm_nsec = local.nanosecond() as i32;
+        let mut datetime = oldtime::OffsetDateTime::from_unix_timestamp(timespec.whole_seconds());
+        assert_eq!(datetime.nanosecond(), 0);
+        datetime += Timespec::new(offset.as_seconds() as i64, local.nanosecond() as i32);
 
-        LocalResult::Single(tm_to_datetime(tm))
+        LocalResult::Single(offsetdatetime_to_datetime(datetime))
     }
 
     fn from_utc_date(&self, utc: &NaiveDate) -> Date<Local> {
@@ -169,11 +146,11 @@ impl TimeZone for Local {
         let timespec = datetime_to_timespec(utc, false);
 
         // datetime_to_timespec completely ignores leap seconds, so we need to adjust for them
-        let mut tm = oldtime::at(timespec);
-        assert_eq!(tm.tm_nsec, 0);
-        tm.tm_nsec = utc.nanosecond() as i32;
+        let mut datetime = oldtime::OffsetDateTime::from_unix_timestamp(timespec.whole_seconds());
+        assert_eq!(datetime.nanosecond(), 0);
+        datetime += Timespec::new(0, utc.nanosecond() as i32);
 
-        tm_to_datetime(tm)
+        offsetdatetime_to_datetime(datetime)
     }
 }
 

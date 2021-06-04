@@ -150,51 +150,48 @@ impl<Tz: TimeZone> DurationRound for DateTime<Tz> {
     type Err = RoundingError;
 
     fn duration_round(self, duration: Duration) -> Result<Self, Self::Err> {
-        if let Some(span) = duration.num_nanoseconds() {
-            if self.timestamp().abs() > MAX_SECONDS_TIMESTAMP_FOR_NANOS {
-                return Err(RoundingError::TimestampExceedsLimit);
-            }
-            let stamp = self.timestamp_nanos();
-            if span > stamp.abs() {
-                return Err(RoundingError::DurationExceedsTimestamp);
-            }
-            let delta_down = stamp % span;
-            if delta_down == 0 {
-                Ok(self)
-            } else {
-                let (delta_up, delta_down) = if delta_down < 0 {
-                    (delta_down.abs(), span - delta_down.abs())
-                } else {
-                    (span - delta_down, delta_down)
-                };
-                if delta_up <= delta_down {
-                    Ok(self + Duration::nanoseconds(delta_up))
-                } else {
-                    Ok(self - Duration::nanoseconds(delta_down))
-                }
-            }
+        let span = duration.whole_nanoseconds();
+        if span > i64::MAX as i128 || span < i64::MIN as i128 {
+            return Err(RoundingError::DurationExceedsLimit);
+        }
+        if self.timestamp().abs() > MAX_SECONDS_TIMESTAMP_FOR_NANOS {
+            return Err(RoundingError::TimestampExceedsLimit);
+        }
+        let stamp = self.timestamp_nanos() as i128;
+        if span > stamp.abs() {
+            return Err(RoundingError::DurationExceedsTimestamp);
+        }
+        let delta_down = stamp % span;
+        if delta_down == 0 {
+            Ok(self)
         } else {
-            Err(RoundingError::DurationExceedsLimit)
+            let (delta_up, delta_down) = if delta_down < 0 {
+                (delta_down.abs(), span - delta_down.abs())
+            } else {
+                (span - delta_down, delta_down)
+            };
+            if delta_up <= delta_down {
+                Ok(self + Duration::nanoseconds(delta_up as i64))
+            } else {
+                Ok(self - Duration::nanoseconds(delta_down as i64))
+            }
         }
     }
 
     fn duration_trunc(self, duration: Duration) -> Result<Self, Self::Err> {
-        if let Some(span) = duration.num_nanoseconds() {
-            if self.timestamp().abs() > MAX_SECONDS_TIMESTAMP_FOR_NANOS {
-                return Err(RoundingError::TimestampExceedsLimit);
-            }
-            let stamp = self.timestamp_nanos();
-            if span > stamp.abs() {
-                return Err(RoundingError::DurationExceedsTimestamp);
-            }
-            let delta_down = stamp % span;
-            match delta_down.cmp(&0) {
-                Ordering::Equal => Ok(self),
-                Ordering::Greater => Ok(self - Duration::nanoseconds(delta_down)),
-                Ordering::Less => Ok(self - Duration::nanoseconds(span - delta_down.abs())),
-            }
-        } else {
-            Err(RoundingError::DurationExceedsLimit)
+        let span = duration.whole_nanoseconds();
+        if self.timestamp().abs() > MAX_SECONDS_TIMESTAMP_FOR_NANOS {
+            return Err(RoundingError::TimestampExceedsLimit);
+        }
+        let stamp = self.timestamp_nanos() as i128;
+        if span > stamp.abs() {
+            return Err(RoundingError::DurationExceedsTimestamp);
+        }
+        let delta_down = stamp % span;
+        match delta_down.cmp(&0) {
+            Ordering::Equal => Ok(self),
+            Ordering::Greater => Ok(self - Duration::nanoseconds(delta_down as i64)),
+            Ordering::Less => Ok(self - Duration::nanoseconds((span - delta_down.abs()) as i64)),
         }
     }
 }
